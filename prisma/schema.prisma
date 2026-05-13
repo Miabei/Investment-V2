@@ -1,0 +1,184 @@
+// Investment V2 — schema source of truth
+// 数据模型详见 DevelopmentPlan.md 第 5 节
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  // URL 由 prisma.config.ts 从 .env 加载(Prisma 7 起 schema 不再支持 url 字段)
+}
+
+// ──────────────────────────────────────────────
+// User
+// ──────────────────────────────────────────────
+// MVP 单用户、不接 Auth.js,所有关联默认指向 userId = "me"。
+// 仍保留 User model,方便日后改造为多用户。
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String?
+  createdAt    DateTime @default(now())
+
+  imports    ImportBatch[]
+  holdings   Holding[]
+  analyses   AnalysisReport[]
+  alertRules AlertRule[]
+}
+
+// ──────────────────────────────────────────────
+// 模块一:台账导入
+// ──────────────────────────────────────────────
+model ImportBatch {
+  id            String       @id @default(cuid())
+  userId        String
+  format        ImportFormat
+  fileUrl       String?      // 手动录入时为 null
+  status        ImportStatus @default(PENDING)
+  columnMapping Json?        // LLM 推断或用户确认的列名映射
+  rawHeaders    Json?        // 原始列头数组,便于复盘
+  createdAt     DateTime     @default(now())
+
+  user     User      @relation(fields: [userId], references: [id])
+  holdings Holding[]
+}
+
+enum ImportFormat {
+  CSV
+  XLSX
+  MANUAL
+}
+
+enum ImportStatus {
+  PENDING
+  PARSED
+  CONFIRMED
+  FAILED
+}
+
+model Holding {
+  id            String   @id @default(cuid())
+  userId        String
+  importBatchId String?
+  fundCode      String?
+  fundName      String
+  amount        Decimal  @db.Decimal(18, 2)
+  profit        Decimal  @db.Decimal(18, 2)
+  profitRate    Decimal  @db.Decimal(8, 4)
+  sector        String?  // 详细描述(EM 行业占比 / LLM 推断短语)
+  sectorBucket  String?  // 标准化分类桶,用于模块二聚合(取自固定桶列表)
+  editedByUser  Boolean  @default(false)
+  updatedAt     DateTime @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id])
+  importBatch ImportBatch? @relation(fields: [importBatchId], references: [id])
+
+  @@index([userId])
+}
+
+// ──────────────────────────────────────────────
+// 模块三:AI 分析报告
+// ──────────────────────────────────────────────
+model AnalysisReport {
+  id               String   @id @default(cuid())
+  userId           String
+  promptRaw        String
+  promptOptimized  String
+  holdingsSnapshot Json     // 当时持仓快照,保证可复盘
+  resultMd         String
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+// ──────────────────────────────────────────────
+// 模块四:行情与盘中估值
+// ──────────────────────────────────────────────
+model MarketQuote {
+  fundCode  String
+  date      DateTime @db.Date
+  nav       Decimal  @db.Decimal(12, 4)
+  changePct Decimal  @db.Decimal(8, 4)
+  fetchedAt DateTime @default(now())
+
+  @@id([fundCode, date])
+}
+
+model NavEstimate {
+  fundCode      String
+  date          DateTime @db.Date
+  estimateClose Decimal  @db.Decimal(12, 4)
+  actualNav     Decimal? @db.Decimal(12, 4)
+  deviationPct  Decimal? @db.Decimal(8, 4)
+
+  @@id([fundCode, date])
+}
+
+model SectorInsight {
+  sector    String
+  date      DateTime @db.Date
+  insight   String
+  createdAt DateTime @default(now())
+
+  @@id([sector, date])
+}
+
+// ──────────────────────────────────────────────
+// 模块六:每日日报
+// ──────────────────────────────────────────────
+model DailyReport {
+  id            String   @id @default(cuid())
+  userId        String
+  date          DateTime @db.Date
+  indexSnapshot Json     // major index quotes at generation time
+  portfolioData Json     // sector aggregation + top holdings
+  resultMd      String   @default("")
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, date])
+}
+
+// ──────────────────────────────────────────────
+// 模块五:提醒规则与事件
+// ──────────────────────────────────────────────
+model AlertRule {
+  id        String       @id @default(cuid())
+  userId    String
+  source    AlertSource
+  scope     AlertScope
+  targetId  String       // fundCode 或 sector 名
+  condition Json         // {type: "drop_pct", value: 5, baseline: "today"}
+  enabled   Boolean      @default(true)
+  createdAt DateTime     @default(now())
+
+  user   User         @relation(fields: [userId], references: [id])
+  events AlertEvent[]
+
+  @@index([userId])
+}
+
+enum AlertSource {
+  AI_SUGGESTED
+  USER
+}
+
+enum AlertScope {
+  FUND
+  SECTOR
+}
+
+model AlertEvent {
+  id          String   @id @default(cuid())
+  ruleId      String
+  triggeredAt DateTime @default(now())
+  payload     Json
+  read        Boolean  @default(false)
+
+  rule AlertRule @relation(fields: [ruleId], references: [id])
+
+  @@index([ruleId])
+}

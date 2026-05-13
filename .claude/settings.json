@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "C:\\Users\\miazh\\.claude\\projects\\d--AI-Projects-Investment-V2"
+    ],
+    "allow": [
+      "Bash(pnpm --version)",
+      "Bash(npm --version)"
+    ]
+  }
+}
